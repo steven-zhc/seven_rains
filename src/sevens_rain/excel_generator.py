@@ -1,7 +1,8 @@
 """Excel generation with beautiful formatting and cross-month week support."""
 
 import xlsxwriter
-from typing import List, Dict, Any
+import json
+from typing import List, Dict, Any, Set
 from datetime import date, timedelta
 from pathlib import Path
 from .models import DayType, WeekPlan
@@ -23,6 +24,23 @@ class ExcelGenerator:
         self.employees = employees
         self.storage = storage
         self.scheduler = WeekScheduler(employees)
+        self.holidays = self._load_holidays()
+    
+    def _load_holidays(self) -> Set[date]:
+        """Load China holidays from JSON file."""
+        try:
+            holidays_file = Path("china_holidays_2025.json")
+            if holidays_file.exists():
+                with open(holidays_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    holiday_dates = set()
+                    for date_str in data.get('all_holiday_dates', []):
+                        year, month, day = map(int, date_str.split('-'))
+                        holiday_dates.add(date(year, month, day))
+                    return holiday_dates
+        except Exception as e:
+            print(f"Warning: Could not load holidays file: {e}")
+        return set()
     
     def generate_month_schedule(self, year: int, month: int, 
                               output_path: str = None) -> str:
@@ -99,11 +117,12 @@ class ExcelGenerator:
         soft_gray = '#F5F5F5'
         dark_gray = '#424242'
         outside_month_gray = '#E0E0E0'
+        holiday_gold = '#FFF8DC'  # Soft cream color for holidays (less harsh)
         
         # Create formats
         formats = self._create_formats(workbook, primary_blue, light_blue, weekend_blue, 
                                      accent_green, warning_red, soft_gray, dark_gray, 
-                                     outside_month_gray)
+                                     outside_month_gray, holiday_gold)
         
         # Build complete day list from all weeks
         all_days = []
@@ -130,10 +149,13 @@ class ExcelGenerator:
             date_str = f"{day.month}/{day.day}"
             is_weekend = day.weekday() >= 5
             is_outside_month = day.month != month
+            is_holiday = day in self.holidays
             
-            # Choose format based on weekend and month
+            # Choose format based on weekend, month and holiday status
             if is_outside_month:
                 fmt = formats['outside_month_header']
+            elif is_holiday:
+                fmt = formats['holiday_header']
             elif is_weekend:
                 fmt = formats['weekend_header']
             else:
@@ -151,9 +173,12 @@ class ExcelGenerator:
             weekday = weekday_names[day.weekday()]
             is_weekend = day.weekday() >= 5
             is_outside_month = day.month != month
+            is_holiday = day in self.holidays
             
             if is_outside_month:
                 fmt = formats['outside_month_header']
+            elif is_holiday:
+                fmt = formats['holiday_header']
             elif is_weekend:
                 fmt = formats['weekend_header']
             else:
@@ -175,14 +200,15 @@ class ExcelGenerator:
                 
                 is_weekend = day.weekday() >= 5
                 is_outside_month = day.month != month
+                is_holiday = day in self.holidays
                 
-                # Choose format based on day type, weekend, and month
-                fmt = self._get_cell_format(day_type, is_weekend, is_outside_month, formats)
+                # Choose format based on day type, weekend, month, and holiday status
+                fmt = self._get_cell_format(day_type, is_weekend, is_outside_month, is_holiday, formats)
                 
                 worksheet.write(row, col, day_type.value, fmt)
         
-        # Summary section
-        self._add_summary_section(worksheet, month_weeks, formats, 4 + len(self.employees) + 2)
+        # Summary section (employees + holidays)
+        self._add_summary_section(worksheet, month_weeks, formats, 4 + len(self.employees) + 2, month, year)
         
         # Set column widths and row heights
         self._format_layout(worksheet, total_cols, len(self.employees))
@@ -192,7 +218,7 @@ class ExcelGenerator:
     
     def _create_formats(self, workbook, primary_blue, light_blue, weekend_blue, 
                        accent_green, warning_red, soft_gray, dark_gray, 
-                       outside_month_gray) -> Dict[str, Any]:
+                       outside_month_gray, holiday_gold) -> Dict[str, Any]:
         """Create all formatting styles."""
         return {
             'title': workbook.add_format({
@@ -215,6 +241,10 @@ class ExcelGenerator:
             'outside_month_header': workbook.add_format({
                 'bold': True, 'align': 'center', 'valign': 'vcenter', 'border': 1,
                 'bg_color': outside_month_gray, 'font_color': dark_gray, 'font_size': 11
+            }),
+            'holiday_header': workbook.add_format({
+                'bold': True, 'align': 'center', 'valign': 'vcenter', 'border': 1,
+                'bg_color': holiday_gold, 'font_color': dark_gray, 'font_size': 11
             }),
             'cell': workbook.add_format({
                 'align': 'center', 'valign': 'vcenter', 'border': 1,
@@ -251,6 +281,18 @@ class ExcelGenerator:
             'outside_month_rest': workbook.add_format({
                 'align': 'center', 'valign': 'vcenter', 'border': 1,
                 'color': accent_green, 'bold': True, 'bg_color': outside_month_gray, 'font_size': 12
+            }),
+            'holiday': workbook.add_format({
+                'align': 'center', 'valign': 'vcenter', 'border': 1,
+                'bg_color': holiday_gold, 'font_color': dark_gray, 'bold': True
+            }),
+            'holiday_oncall': workbook.add_format({
+                'align': 'center', 'valign': 'vcenter', 'border': 1,
+                'color': warning_red, 'bold': True, 'bg_color': holiday_gold, 'font_size': 12
+            }),
+            'holiday_rest': workbook.add_format({
+                'align': 'center', 'valign': 'vcenter', 'border': 1,
+                'color': accent_green, 'bold': True, 'bg_color': holiday_gold, 'font_size': 12
             })
         }
     
@@ -268,7 +310,7 @@ class ExcelGenerator:
         return DayType.WORK  # Default fallback
     
     def _get_cell_format(self, day_type: DayType, is_weekend: bool, 
-                        is_outside_month: bool, formats: Dict[str, Any]):
+                        is_outside_month: bool, is_holiday: bool, formats: Dict[str, Any]):
         """Get appropriate cell format based on conditions."""
         if is_outside_month:
             if day_type == DayType.ON_CALL:
@@ -277,6 +319,13 @@ class ExcelGenerator:
                 return formats['outside_month_rest']
             else:
                 return formats['outside_month']
+        elif is_holiday:
+            if day_type == DayType.ON_CALL:
+                return formats['holiday_oncall']
+            elif day_type == DayType.REST:
+                return formats['holiday_rest']
+            else:
+                return formats['holiday']
         elif is_weekend:
             if day_type == DayType.ON_CALL:
                 return formats['weekend_oncall']
@@ -293,7 +342,7 @@ class ExcelGenerator:
                 return formats['cell']
     
     def _add_summary_section(self, worksheet, month_weeks: List[WeekPlan], 
-                           formats: Dict[str, Any], start_row: int) -> None:
+                           formats: Dict[str, Any], start_row: int, month: int, year: int) -> None:
         """Add employee summary statistics section."""
         # Calculate statistics from all weeks
         employee_stats = {emp: {"听": 0, "休": 0, "白": 0} for emp in self.employees}
@@ -308,6 +357,9 @@ class ExcelGenerator:
         # Summary header
         worksheet.write(start_row, 0, "员工统计:", formats['title'])
         
+        # Calculate holiday stats for this month display period
+        month_holidays_count = self._count_holidays_in_display_period(month_weeks)
+        
         # Summary table headers
         header_row = start_row + 1
         worksheet.write(header_row, 0, "姓名", formats['header'])
@@ -315,6 +367,7 @@ class ExcelGenerator:
         worksheet.write(header_row, 2, "休息天数", formats['header'])
         worksheet.write(header_row, 3, "工作天数", formats['header'])
         worksheet.write(header_row, 4, "总天数", formats['header'])
+        worksheet.write(header_row, 5, "法定假日", formats['holiday_header'])
         
         # Summary data
         for i, employee in enumerate(self.employees):
@@ -327,6 +380,83 @@ class ExcelGenerator:
             worksheet.write(row, 2, stats["休"], formats['rest'])
             worksheet.write(row, 3, stats["白"], formats['cell'])
             worksheet.write(row, 4, total, formats['header'])
+            worksheet.write(row, 5, f"{month_holidays_count}天", formats['holiday'])
+        
+        # Skip holiday statistics section - already shown in employee table
+    
+    def _count_holidays_in_display_period(self, month_weeks: List[WeekPlan]) -> int:
+        """Count holidays in the displayed period (including cross-month days)."""
+        holiday_count = 0
+        for week in month_weeks:
+            week_start = week.week_start
+            for day_offset in range(7):
+                current_date = week_start + timedelta(days=day_offset)
+                if current_date in self.holidays:
+                    holiday_count += 1
+        return holiday_count
+    
+    def _add_holiday_statistics(self, worksheet, formats: Dict[str, Any], start_row: int, month: int, year: int) -> None:
+        """Add holiday statistics section."""
+        # Calculate month holidays
+        month_holidays = []
+        total_month_days = 0
+        
+        # Get all days in displayed range (including cross-month)
+        for week in self.storage.get_month_weeks(year, month):
+            week_start = week.week_start
+            for day_offset in range(7):
+                current_date = week_start + timedelta(days=day_offset)
+                total_month_days += 1
+                if current_date in self.holidays:
+                    month_holidays.append(current_date)
+        
+        # Load holiday names from JSON
+        holiday_names = self._get_holiday_names_for_month(month)
+        
+        # Holiday statistics header
+        worksheet.write(start_row, 0, "节假日统计:", formats['title'])
+        
+        # Color legend
+        legend_row = start_row + 1
+        worksheet.write(legend_row, 0, "颜色说明:", formats['header'])
+        worksheet.write(legend_row, 1, "法定节假日", formats['holiday'])
+        worksheet.write(legend_row, 2, "周末", formats['weekend'])
+        worksheet.write(legend_row, 3, "工作日", formats['cell'])
+        worksheet.write(legend_row, 4, "值班", formats['oncall'])
+        worksheet.write(legend_row, 5, "休息", formats['rest'])
+        
+        # Holiday statistics
+        stats_row = legend_row + 2
+        worksheet.write(stats_row, 0, "本月概览:", formats['header'])
+        worksheet.write(stats_row, 1, f"总天数: {total_month_days}", formats['cell'])
+        worksheet.write(stats_row, 2, f"法定节假日: {len(month_holidays)}天", formats['holiday'])
+        
+        # List holiday names if any
+        if holiday_names:
+            names_row = stats_row + 1
+            worksheet.write(names_row, 0, "节假日:", formats['header'])
+            holiday_text = " | ".join(holiday_names)
+            worksheet.write(names_row, 1, holiday_text, formats['holiday'])
+    
+    def _get_holiday_names_for_month(self, month: int) -> List[str]:
+        """Get holiday names that occur in the given month."""
+        try:
+            holidays_file = Path("china_holidays_2025.json")
+            if holidays_file.exists():
+                with open(holidays_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    holiday_names = []
+                    for holiday in data.get('holidays', []):
+                        # Check if any date of this holiday falls in the target month
+                        for date_str in holiday['dates']:
+                            year, hmonth, day = map(int, date_str.split('-'))
+                            if hmonth == month:
+                                holiday_names.append(holiday['name'])
+                                break  # Only add once per holiday
+                    return holiday_names
+        except Exception as e:
+            print(f"Warning: Could not load holiday names: {e}")
+        return []
     
     def _format_layout(self, worksheet, total_cols: int, num_employees: int) -> None:
         """Set column widths and row heights."""

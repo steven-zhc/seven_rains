@@ -189,4 +189,19 @@ def main(target_year: int = None, target_month: int = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    
+    target_year = None
+    target_month = None
+    
+    # Parse command line arguments
+    if len(sys.argv) > 1:
+        arg = sys.argv[1]
+        if '-' in arg:  # Format: 2025-10
+            year_str, month_str = arg.split('-')
+            target_year = int(year_str)
+            target_month = int(month_str)
+        else:  # Just year
+            target_year = int(arg)
+    
+    main(target_year, target_month)

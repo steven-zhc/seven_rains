@@ -174,6 +174,42 @@ class FairRotationRule(SchedulingRule):
         return "Fair Rotation"
 
 
+class ThursdayOnlyRule(SchedulingRule):
+    """Rule: 张尧 can only do on-call on Thursdays (highest priority)."""
+    
+    def validate(self, employee: str, day: int, day_type: DayType, 
+                week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
+        """张尧 can only be on-call on Thursdays."""
+        if employee != "张尧":
+            return True  # Rule doesn't apply to other employees
+            
+        if day_type != DayType.ON_CALL:
+            return True  # Rule doesn't apply to non-on-call assignments
+        
+        return day == 3  # Thursday only (0=Monday, 3=Thursday)
+    
+    def get_priority(self) -> int:
+        return 110  # Highest priority
+    
+    def get_name(self) -> str:
+        return "张尧 Thursday Only On-Call"
+
+
+class PreferThursdayForZhangYaoRule(SchedulingRule):
+    """Rule: Prefer 张尧 for Thursday on-call duties."""
+    
+    def validate(self, employee: str, day: int, day_type: DayType, 
+                week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
+        """This is a preference rule - doesn't block assignments."""
+        return True  # Preference rule - doesn't block assignments
+    
+    def get_priority(self) -> int:
+        return 105  # Very high priority preference
+    
+    def get_name(self) -> str:
+        return "Prefer 张尧 for Thursday"
+
+
 # Default rule set
 DEFAULT_RULES = [
     WeekendRestAfterOnCallRule(),
