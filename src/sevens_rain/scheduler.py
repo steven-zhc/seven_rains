@@ -85,20 +85,27 @@ class WeekScheduler:
     
     def _assign_on_call_duties(self, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> None:
         """Assign on-call duties while following rules."""
-        assignments_needed = len(self.employees)  # One per employee per week
+        # Need exactly 7 on-call assignments (one per day), not one per employee
         assignments_made = 0
         
-        # Track which employees still need on-call assignment
+        # Track which employees still need on-call assignment for fairness
         employees_needing_oncall = self.employees.copy()
         
-        # Assign one on-call per day, trying to satisfy all employees
-        for day in range(7):
-            if not employees_needing_oncall or assignments_made >= assignments_needed:
+        # Special handling: Assign Thursday (day 3) first to ensure 张尧 gets it
+        days_to_assign = list(range(7))
+        # Move Thursday to front if 张尧 is available
+        if 3 in days_to_assign:
+            days_to_assign.remove(3)
+            days_to_assign.insert(0, 3)  # Thursday first
+        
+        # Assign one on-call per day (7 days total)
+        for day in days_to_assign:
+            if assignments_made >= 7:  # One assignment per day
                 break
                 
             # Find available employees for this day
             available_employees = []
-            for employee in employees_needing_oncall:
+            for employee in self.employees:  # Check all employees, not just those needing on-call
                 # Check if already assigned something this day
                 current_assignment = week_plan.get_assignment(day, employee)
                 if current_assignment is not None:
@@ -114,9 +121,12 @@ class WeekScheduler:
                     available_employees, day, week_plan, previous_data
                 )
                 
+                
                 # Assign on-call
                 week_plan.set_assignment(day, chosen_employee, DayType.ON_CALL)
-                employees_needing_oncall.remove(chosen_employee)
+                # Remove from needing list only if they were in it
+                if chosen_employee in employees_needing_oncall:
+                    employees_needing_oncall.remove(chosen_employee)
                 assignments_made += 1
                 
                 # Assign rest day after on-call
@@ -204,8 +214,19 @@ class WeekScheduler:
         if len(available_employees) == 1:
             return available_employees[0]
         
-        # Simple rotation based on day and employee index
-        # Could be enhanced with fairness tracking
+        # Special case: Prefer 张尧 for Thursday (day 3)
+        if day == 3 and "张尧" in available_employees:  # Thursday
+            return "张尧"
+        
+        # Special case: If 张尧 is available but it's not Thursday, prefer others
+        if "张尧" in available_employees and day != 3:
+            other_employees = [emp for emp in available_employees if emp != "张尧"]
+            if other_employees:
+                # Choose from other employees first
+                day_offset = day % len(other_employees)
+                return other_employees[day_offset]
+        
+        # Default rotation logic
         day_offset = day % len(available_employees)
         return available_employees[day_offset]
     

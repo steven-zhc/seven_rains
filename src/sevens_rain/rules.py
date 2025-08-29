@@ -87,6 +87,10 @@ class NoConsecutiveWeekdayRule(SchedulingRule):
         if day_type != DayType.ON_CALL:
             return True
             
+        # Special exception: 张尧 can be on-call on consecutive Thursdays
+        if employee == "张尧" and day == 3:  # Thursday
+            return True
+            
         if not previous_data:
             return True
             
@@ -109,6 +113,10 @@ class OneOnCallPerWeekRule(SchedulingRule):
                 week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
         """Check if employee already has on-call this week."""
         if day_type != DayType.ON_CALL:
+            return True
+            
+        # Special exception: 张尧 can always be assigned on Thursday (day 3) regardless of other on-call days
+        if employee == "张尧" and day == 3:  # Thursday
             return True
             
         # Count employee's on-call days this week
@@ -174,10 +182,51 @@ class FairRotationRule(SchedulingRule):
         return "Fair Rotation"
 
 
+class ThursdayOnlyRule(SchedulingRule):
+    """Rule: 张尧 only gets on-call duty on Thursdays (day 3)."""
+    
+    def validate(self, employee: str, day: int, day_type: DayType, 
+                week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
+        """Check if 张尧 is only assigned on-call on Thursdays."""
+        if employee != "张尧":
+            return True  # Rule doesn't apply to other employees
+            
+        if day_type != DayType.ON_CALL:
+            return True  # Rule only applies to on-call assignments
+            
+        # 张尧 can only be on-call on Thursday (day 3, 0=Monday)
+        return day == 3
+    
+    def get_priority(self) -> int:
+        return 110  # Highest priority, above all other rules
+    
+    def get_name(self) -> str:
+        return "张尧 Thursday Only On-Call"
+
+
+class PreferThursdayForZhangYaoRule(SchedulingRule):
+    """Rule: Prefer to assign 张尧 on Thursdays when possible."""
+    
+    def validate(self, employee: str, day: int, day_type: DayType, 
+                week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
+        """This is a preference rule that helps scheduler choose 张尧 for Thursday."""
+        # Always return True - this rule doesn't block assignments
+        # It's used by the scheduler to make better choices
+        return True
+    
+    def get_priority(self) -> int:
+        return 105  # Very high priority for张尧 preference
+    
+    def get_name(self) -> str:
+        return "Prefer 张尧 for Thursday On-Call"
+
+
 # Default rule set
 DEFAULT_RULES = [
     WeekendRestAfterOnCallRule(),
+    ThursdayOnlyRule(),
     NoConsecutiveWeekdayRule(), 
+    PreferThursdayForZhangYaoRule(),
     OneOnCallPerWeekRule(),
     RestAfterOnCallRule(),
     WeekendRestPreferenceRule(),
