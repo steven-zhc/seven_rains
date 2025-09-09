@@ -85,7 +85,7 @@ class WeekScheduler:
     
     def _assign_on_call_duties(self, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> None:
         """Assign on-call duties while following rules."""
-        # Need exactly 7 on-call assignments (one per day), not one per employee
+        # Need exactly 7 on-call assignments (one per day)
         assignments_made = 0
         
         # Track which employees still need on-call assignment for fairness
@@ -93,9 +93,6 @@ class WeekScheduler:
         
         # Assign one on-call per day (7 days total)
         for day in range(7):
-            if assignments_made >= 7:  # One assignment per day
-                break
-                
             # Find available employees for this day
             available_employees = []
             for employee in self.employees:  # Check all employees, not just those needing on-call
@@ -109,9 +106,9 @@ class WeekScheduler:
                     available_employees.append(employee)
             
             if available_employees:
-                # Choose employee (could be random or based on fairness algorithm)
+                # Choose employee (prioritize those who still need on-call assignment)
                 chosen_employee = self._choose_employee_for_oncall(
-                    available_employees, day, week_plan, previous_data
+                    available_employees, day, week_plan, previous_data, employees_needing_oncall
                 )
                 
                 # Assign on-call
@@ -123,6 +120,18 @@ class WeekScheduler:
                 
                 # Assign rest day after on-call
                 self._assign_rest_after_oncall(week_plan, chosen_employee, day)
+            else:
+                # No available employees - this should not happen with DailyOnCallCoverageRule
+                # Try to find ANY employee who can be assigned (emergency assignment)
+                print(f"WARNING: No available employees for day {day}, trying emergency assignment")
+                for employee in self.employees:
+                    current_assignment = week_plan.get_assignment(day, employee)
+                    if current_assignment is None:  # Not assigned anything yet
+                        week_plan.set_assignment(day, employee, DayType.ON_CALL)
+                        assignments_made += 1
+                        self._assign_rest_after_oncall(week_plan, employee, day)
+                        print(f"Emergency assignment: {employee} on day {day}")
+                        break
     
     def _assign_rest_after_oncall(self, week_plan: WeekPlan, employee: str, oncall_day: int) -> None:
         """Assign rest day(s) after on-call duty."""
@@ -201,13 +210,22 @@ class WeekScheduler:
         return True
     
     def _choose_employee_for_oncall(self, available_employees: List[str], day: int, 
-                                  week_plan: WeekPlan, previous_data: List[WeekPlan]) -> str:
-        """Choose which employee gets on-call duty (rotation logic)."""
+                                  week_plan: WeekPlan, previous_data: List[WeekPlan], 
+                                  employees_needing_oncall: List[str] = None) -> str:
+        """Choose which employee gets on-call duty (prioritize those who need on-call)."""
         if len(available_employees) == 1:
             return available_employees[0]
         
-        # Simple rotation based on day and employee index
-        # Could be enhanced with fairness tracking
+        # Rule 2: Prioritize employees who still need on-call assignment this week
+        if employees_needing_oncall:
+            employees_needing_and_available = [emp for emp in available_employees 
+                                             if emp in employees_needing_oncall]
+            if employees_needing_and_available:
+                # Choose from those who still need on-call
+                day_offset = day % len(employees_needing_and_available)
+                return employees_needing_and_available[day_offset]
+        
+        # Fallback: Simple rotation based on day and employee index
         day_offset = day % len(available_employees)
         return available_employees[day_offset]
     

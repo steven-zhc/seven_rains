@@ -41,8 +41,39 @@ class SchedulingRule(ABC):
         pass
 
 
+class DailyOnCallCoverageRule(SchedulingRule):
+    """Rule: Every day must have at least one person on call, including weekends."""
+    
+    def validate(self, employee: str, day: int, day_type: DayType, 
+                week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
+        """This rule ensures daily coverage - enforced during assignment logic."""
+        return True  # Always valid - enforced during assignment
+    
+    def get_priority(self) -> int:
+        return 110  # Highest priority
+    
+    def get_name(self) -> str:
+        return "Daily On-Call Coverage Required"
+
+
+class MinimumOnCallPerWeekRule(SchedulingRule):
+    """Rule: Each person must be on-call at least once per week."""
+    
+    def validate(self, employee: str, day: int, day_type: DayType, 
+                week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
+        """This rule is enforced during assignment logic, not validation."""
+        return True  # Always valid - enforced during assignment
+    
+    def get_priority(self) -> int:
+        return 105  # Priority between 110 and 100
+    
+    def get_name(self) -> str:
+        return "Minimum One On-Call Per Week"
+
+
 class WeekendRestAfterOnCallRule(SchedulingRule):
-    """Rule: Employees must rest Mon+Tue after weekend on-call, and Mon after Friday on-call."""
+    """Rule: Employees must rest Mon+Tue after weekend on-call, and Mon after Friday on-call. 
+    Supports up to 2 on-call days per week per employee."""
     
     def validate(self, employee: str, day: int, day_type: DayType, 
                 week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
@@ -63,12 +94,14 @@ class WeekendRestAfterOnCallRule(SchedulingRule):
                 if employee in weekend_oncall:
                     return False  # Employee must rest, cannot be on-call
         
-        # Rule 2: Monday after Friday on-call
+        # Rule 2: Monday after Friday on-call  
         if day == 0:  # Monday
             friday_oncall = last_week.get_on_call_employees(4)  # Friday
             if employee in friday_oncall:
                 return False  # Employee must rest Monday after Friday on-call
-                
+        
+        # Rule 3: Support for 2 on-call days per week - handled by TwoOnCallPerWeekRule
+        # This rule focuses on mandatory rest periods only
         return True
     
     def get_priority(self) -> int:
@@ -102,12 +135,12 @@ class NoConsecutiveWeekdayRule(SchedulingRule):
         return "No Consecutive Same Weekday On-Call"
 
 
-class OneOnCallPerWeekRule(SchedulingRule):
-    """Rule: Each employee gets exactly one on-call day per week."""
+class TwoOnCallPerWeekRule(SchedulingRule):
+    """Rule: Each employee can have up to two on-call days per week."""
     
     def validate(self, employee: str, day: int, day_type: DayType, 
                 week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
-        """Check if employee already has on-call this week."""
+        """Check if employee already has 2 on-call assignments this week."""
         if day_type != DayType.ON_CALL:
             return True
             
@@ -115,13 +148,13 @@ class OneOnCallPerWeekRule(SchedulingRule):
         employee_schedule = week_plan.get_employee_schedule(employee)
         current_oncall_count = sum(1 for dt in employee_schedule if dt == DayType.ON_CALL)
         
-        return current_oncall_count == 0  # Only allow if no on-call yet
+        return current_oncall_count < 2  # Allow up to 2 on-call days
     
     def get_priority(self) -> int:
         return 70
     
     def get_name(self) -> str:
-        return "One On-Call Per Week"
+        return "Max Two On-Call Per Week"
 
 
 class RestAfterOnCallRule(SchedulingRule):
@@ -174,12 +207,11 @@ class FairRotationRule(SchedulingRule):
         return "Fair Rotation"
 
 
-# Default rule set
+# Default rule set - 5 rules as per updated documentation
 DEFAULT_RULES = [
-    WeekendRestAfterOnCallRule(),
-    NoConsecutiveWeekdayRule(), 
-    OneOnCallPerWeekRule(),
-    RestAfterOnCallRule(),
-    WeekendRestPreferenceRule(),
-    FairRotationRule()
+    DailyOnCallCoverageRule(),       # 110 - 规则1: 每日值班覆盖
+    MinimumOnCallPerWeekRule(),      # 105 - 规则2: 每人每周至少听班一次
+    WeekendRestAfterOnCallRule(),    # 100 - 规则3: 周末值班后强制休息
+    RestAfterOnCallRule(),           # 90  - 规则4: 值班后休息
+    NoConsecutiveWeekdayRule(),      # 80  - 规则5: 避免重复排班
 ]
