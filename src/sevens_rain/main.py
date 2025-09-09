@@ -15,11 +15,11 @@ from .rules import DEFAULT_RULES
 # Employee names - extracted from sample.xls file
 EMPLOYEES = [
     "姚强",
-    "钱国祥", 
+    "张尧", 
     "包汀池",
     "孙震", 
     "夏银龙",
-    "张尧"
+    "钱国祥"
 ]
 
 # Global instances for new architecture
