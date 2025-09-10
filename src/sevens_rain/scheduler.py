@@ -222,7 +222,7 @@ class WeekScheduler:
     def _choose_employee_for_oncall(self, available_employees: List[str], day: int, 
                                   week_plan: WeekPlan, previous_data: List[WeekPlan], 
                                   employees_needing_oncall: List[str] = None) -> str:
-        """Choose which employee gets on-call duty (prioritize those who need on-call)."""
+        """Choose which employee gets on-call duty (prioritize fairness and weekly requirement)."""
         if len(available_employees) == 1:
             return available_employees[0]
         
@@ -231,13 +231,35 @@ class WeekScheduler:
             employees_needing_and_available = [emp for emp in available_employees 
                                              if emp in employees_needing_oncall]
             if employees_needing_and_available:
-                # Choose from those who still need on-call
-                day_offset = day % len(employees_needing_and_available)
-                return employees_needing_and_available[day_offset]
+                # Among those who need on-call, choose the one with fewest historical assignments
+                return self._choose_fairest_employee(employees_needing_and_available, previous_data)
         
-        # Fallback: Simple rotation based on day and employee index
-        day_offset = day % len(available_employees)
-        return available_employees[day_offset]
+        # Fallback: Choose fairest from all available employees
+        return self._choose_fairest_employee(available_employees, previous_data)
+    
+    def _choose_fairest_employee(self, available_employees: List[str], previous_data: List[WeekPlan]) -> str:
+        """Choose employee with fewest historical on-call assignments for fairness."""
+        # Count historical on-call assignments for each available employee
+        historical_counts = {}
+        for employee in available_employees:
+            count = 0
+            # Count from all previous weeks
+            for week in previous_data:
+                for day in range(7):
+                    if employee in week.get_on_call_employees(day):
+                        count += 1
+            historical_counts[employee] = count
+        
+        # Find minimum count
+        min_count = min(historical_counts.values())
+        
+        # Get all employees with minimum count
+        fairest_employees = [emp for emp in available_employees 
+                           if historical_counts[emp] == min_count]
+        
+        # If multiple employees have same minimal count, use alphabetical order for consistency
+        fairest_employees.sort()
+        return fairest_employees[0]
     
     def get_rule_names(self) -> List[str]:
         """Get list of active rule names."""
