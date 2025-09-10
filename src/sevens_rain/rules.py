@@ -135,6 +135,31 @@ class NoConsecutiveWeekdayRule(SchedulingRule):
         return "No Consecutive Same Weekday On-Call"
 
 
+class ThursdayOnCallExtendedRestRule(SchedulingRule):
+    """Rule: Thursday on-call requires extended rest (Fri-Sun) and no Monday on-call."""
+    
+    def validate(self, employee: str, day: int, day_type: DayType, 
+                week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
+        """Check if employee should not be on-call on Monday after Thursday on-call."""
+        if day_type != DayType.ON_CALL:
+            return True
+        
+        # Rule: Monday on-call not allowed after Thursday on-call of previous week
+        if day == 0 and previous_data:  # Monday
+            last_week = previous_data[0]
+            thursday_oncall = last_week.get_on_call_employees(3)  # Thursday
+            if employee in thursday_oncall:
+                return False  # Cannot be on-call Monday after Thursday on-call
+        
+        return True
+    
+    def get_priority(self) -> int:
+        return 85  # Between RestAfterOnCallRule (90) and NoConsecutiveWeekdayRule (80)
+    
+    def get_name(self) -> str:
+        return "Thursday On-Call Extended Rest"
+
+
 class TwoOnCallPerWeekRule(SchedulingRule):
     """Rule: Each employee can have up to two on-call days per week."""
     
@@ -162,8 +187,33 @@ class RestAfterOnCallRule(SchedulingRule):
     
     def validate(self, employee: str, day: int, day_type: DayType, 
                 week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
-        """This rule is enforced by assignment logic, not validation."""
-        return True  # Always valid - enforced during assignment
+        """Check if employee should rest after on-call (same week and cross-week)."""
+        if day_type != DayType.ON_CALL:
+            return True  # Rule only applies to on-call assignments
+        
+        # Check if employee was on-call yesterday (same week)
+        if day > 0:  # Not Monday
+            yesterday_assignment = week_plan.get_assignment(day - 1, employee)
+            if yesterday_assignment == DayType.ON_CALL:
+                # Check special cases for extended rest requirements
+                if day - 1 == 3:  # Yesterday was Thursday
+                    # Thursday on-call requires Fri+Sat+Sun rest
+                    return False
+                elif day - 1 == 4:  # Yesterday was Friday  
+                    # Friday on-call requires Sat+Sun+Mon rest
+                    return False
+                else:
+                    # Regular case: any on-call requires next day rest
+                    return False
+        
+        # Check cross-week: Monday after previous Sunday on-call
+        if day == 0 and previous_data:  # Monday
+            last_week = previous_data[0]
+            sunday_assignment = last_week.get_assignment(6, employee)  # Sunday
+            if sunday_assignment == DayType.ON_CALL:
+                return False  # Cannot be on-call Monday after Sunday on-call
+        
+        return True
     
     def get_priority(self) -> int:
         return 90
@@ -207,11 +257,12 @@ class FairRotationRule(SchedulingRule):
         return "Fair Rotation"
 
 
-# Default rule set - 5 rules as per updated documentation
+# Default rule set - 6 rules as per updated documentation
 DEFAULT_RULES = [
     DailyOnCallCoverageRule(),       # 110 - 规则1: 每日值班覆盖
     MinimumOnCallPerWeekRule(),      # 105 - 规则2: 每人每周至少听班一次
     WeekendRestAfterOnCallRule(),    # 100 - 规则3: 周末值班后强制休息
     RestAfterOnCallRule(),           # 90  - 规则4: 值班后休息
-    NoConsecutiveWeekdayRule(),      # 80  - 规则5: 避免重复排班
+    ThursdayOnCallExtendedRestRule(), # 85  - 规则5: 周四听班扩展休息
+    NoConsecutiveWeekdayRule(),      # 80  - 规则6: 避免重复排班
 ]

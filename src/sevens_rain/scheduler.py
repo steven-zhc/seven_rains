@@ -148,8 +148,15 @@ class WeekScheduler:
             
             # Monday rest will be handled by mandatory rest in next week
             # (We need to track this as a special case)
+        elif oncall_day == 3:  # Thursday on-call
+            # Thursday on-call gets Fri+Sat+Sun rest, and cannot be on-call Monday (next week)
+            # Assign Friday (4), Saturday (5) and Sunday (6) in current week
+            for rest_day in [4, 5, 6]:
+                week_plan.set_assignment(rest_day, employee, DayType.REST)
+            
+            # Monday restriction handled by ThursdayOnCallExtendedRestRule validation
         else:
-            # Monday-Thursday on-call gets next day rest
+            # Monday-Wednesday on-call gets next day rest
             rest_day = oncall_day + 1
             if rest_day < 7:
                 current_assignment = week_plan.get_assignment(rest_day, employee)
