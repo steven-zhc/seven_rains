@@ -59,29 +59,27 @@ class WeekScheduler:
         return week_plan
     
     def _assign_mandatory_rest(self, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> None:
-        """Assign mandatory rest days based on previous week's on-call."""
+        """Assign mandatory rest days based on previous week's on-call according to Rule 3."""
         if not previous_data:
             return
             
         last_week = previous_data[0]  # Most recent week (sorted most recent first)
         
-        # Rule 1: Weekend on-call gets Mon+Tue rest
-        for weekend_day in [5, 6]:  # Saturday, Sunday
-            weekend_oncall_employees = last_week.get_on_call_employees(weekend_day)
+        # Apply Rule 3: Detailed rest assignments based on previous week's on-call
+        for employee in self.employees:
+            # Friday on-call → Saturday, Sunday, Monday rest (Saturday+Sunday handled in same week)
+            if employee in last_week.get_on_call_employees(4):  # Friday
+                week_plan.set_assignment(0, employee, DayType.REST)  # Monday rest
             
-            for employee in weekend_oncall_employees:
-                # Weekend on-call: Monday (0) and Tuesday (1) rest
-                week_plan.set_assignment(0, employee, DayType.REST)
-                week_plan.set_assignment(1, employee, DayType.REST)
-        
-        # Rule 2: Friday on-call gets Monday rest (Sat+Sun already assigned in previous week)
-        friday_oncall_employees = last_week.get_on_call_employees(4)  # Friday
-        for employee in friday_oncall_employees:
-            # Friday on-call: Monday rest (Sat+Sun handled in same week)
-            week_plan.set_assignment(0, employee, DayType.REST)
-        
-        # Rule 3: Other weekday on-call (Mon-Thu) gets next day rest (handled in same week)
-        # No cross-week action needed for Mon-Thu on-call
+            # Saturday on-call → Sunday, Monday, Tuesday rest (Sunday handled in same week)
+            if employee in last_week.get_on_call_employees(5):  # Saturday
+                week_plan.set_assignment(0, employee, DayType.REST)  # Monday rest
+                week_plan.set_assignment(1, employee, DayType.REST)  # Tuesday rest
+            
+            # Sunday on-call → Monday, Tuesday rest
+            if employee in last_week.get_on_call_employees(6):  # Sunday
+                week_plan.set_assignment(0, employee, DayType.REST)  # Monday rest
+                week_plan.set_assignment(1, employee, DayType.REST)  # Tuesday rest
     
     def _assign_on_call_duties(self, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> None:
         """Assign on-call duties while following rules."""
@@ -134,34 +132,39 @@ class WeekScheduler:
                         break
     
     def _assign_rest_after_oncall(self, week_plan: WeekPlan, employee: str, oncall_day: int) -> None:
-        """Assign rest day(s) after on-call duty."""
-        if oncall_day >= 5:  # Weekend on-call (Sat=5, Sun=6)
-            # Weekend on-call gets Mon+Tue rest (handled in next week's mandatory rest)
-            return
-        elif oncall_day == 4:  # Friday on-call
-            # Friday on-call gets Sat+Sun+Mon rest
-            # Assign Saturday (5) and Sunday (6) in current week
-            for rest_day in [5, 6]:
-                current_assignment = week_plan.get_assignment(rest_day, employee)
-                if current_assignment is None:
-                    week_plan.set_assignment(rest_day, employee, DayType.REST)
-            
-            # Monday rest will be handled by mandatory rest in next week
-            # (We need to track this as a special case)
+        """Assign rest day(s) after on-call duty according to detailed rules."""
+        if oncall_day == 0:  # Monday on-call
+            # Monday on-call → Tuesday rest, Wednesday work
+            week_plan.set_assignment(1, employee, DayType.REST)
+                
+        elif oncall_day == 1:  # Tuesday on-call  
+            # Tuesday on-call → Wednesday rest, Thursday work
+            week_plan.set_assignment(2, employee, DayType.REST)
+                
+        elif oncall_day == 2:  # Wednesday on-call
+            # Wednesday on-call → Thursday rest, Friday work
+            week_plan.set_assignment(3, employee, DayType.REST)
+                
         elif oncall_day == 3:  # Thursday on-call
-            # Thursday on-call gets Fri+Sat+Sun rest, and cannot be on-call Monday (next week)
-            # Assign Friday (4), Saturday (5) and Sunday (6) in current week
+            # Thursday on-call → Fri+Sat+Sun rest, next Monday work
             for rest_day in [4, 5, 6]:
                 week_plan.set_assignment(rest_day, employee, DayType.REST)
+                
+        elif oncall_day == 4:  # Friday on-call
+            # Friday on-call → Sat+Sun+Mon rest, next Tuesday work
+            for rest_day in [5, 6]:
+                week_plan.set_assignment(rest_day, employee, DayType.REST)
+            # Monday rest handled by mandatory rest in next week
             
-            # Monday restriction handled by ThursdayOnCallExtendedRestRule validation
-        else:
-            # Monday-Wednesday on-call gets next day rest
-            rest_day = oncall_day + 1
-            if rest_day < 7:
-                current_assignment = week_plan.get_assignment(rest_day, employee)
-                if current_assignment is None:
-                    week_plan.set_assignment(rest_day, employee, DayType.REST)
+        elif oncall_day == 5:  # Saturday on-call
+            # Saturday on-call → Sun+Mon+Tue rest, next Wednesday work
+            week_plan.set_assignment(6, employee, DayType.REST)
+            # Mon+Tue rest handled by mandatory rest in next week
+            
+        elif oncall_day == 6:  # Sunday on-call
+            # Sunday on-call → Mon+Tue rest, next Wednesday work
+            # Mon+Tue rest handled by mandatory rest in next week
+            pass
     
     def _fill_remaining_days(self, week_plan: WeekPlan) -> None:
         """Fill remaining unassigned days with work or weekend rest."""
