@@ -72,6 +72,55 @@ class MinimumOnCallPerWeekRule(SchedulingRule):
 
 
 
+class NoConsecutiveWeekendRule(SchedulingRule):
+    """Rule: No weekend on-call in consecutive weeks for same person."""
+    
+    def validate(self, employee: str, day: int, day_type: DayType, 
+                week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
+        """Check if employee had weekend on-call last week."""
+        if day_type != DayType.ON_CALL:
+            return True
+            
+        # Only applies to weekend days
+        if day not in [5, 6]:  # Not Saturday or Sunday
+            return True
+            
+        if not previous_data:
+            return True
+            
+        # Check the immediate previous week for weekend assignments
+        last_week = previous_data[0]  # Most recent week (sorted most recent first)
+        
+        # Check if employee was on-call on ANY weekend day last week
+        last_weekend_saturday = last_week.get_on_call_employees(5)  # Saturday
+        last_weekend_sunday = last_week.get_on_call_employees(6)    # Sunday
+        
+        # If employee was on weekend on-call last week, don't assign this weekend
+        if employee in last_weekend_saturday or employee in last_weekend_sunday:
+            return False
+        
+        # Also check if we're in the second weekend of a month (additional protection)
+        # This handles edge cases where weeks span differently
+        if len(previous_data) >= 2:
+            # Check two weeks ago as well for extra protection
+            two_weeks_ago = previous_data[1]
+            two_weeks_saturday = two_weeks_ago.get_on_call_employees(5)
+            two_weeks_sunday = two_weeks_ago.get_on_call_employees(6) 
+            
+            # If employee was on weekend 2 weeks ago AND last week, extra strict
+            if (employee in two_weeks_saturday or employee in two_weeks_sunday):
+                if (employee in last_weekend_saturday or employee in last_weekend_sunday):
+                    return False  # Three consecutive weekends would be too much
+            
+        return True
+    
+    def get_priority(self) -> int:
+        return 85  # Between RestAfterOnCallRule(90) and NoConsecutiveWeekdayRule(80)
+    
+    def get_name(self) -> str:
+        return "No Consecutive Weekend On-Call"
+
+
 class NoConsecutiveWeekdayRule(SchedulingRule):
     """Rule: No on-call on same weekday in consecutive weeks."""
     
@@ -232,10 +281,11 @@ class FairRotationRule(SchedulingRule):
         return "Fair Rotation"
 
 
-# Default rule set - 4 rules strictly matching documentation
+# Default rule set - 5 rules with weekend fairness
 DEFAULT_RULES = [
     DailyOnCallCoverageRule(),       # 110 - 规则1: 每日值班覆盖
     MinimumOnCallPerWeekRule(),      # 100 - 规则2: 每人每周至少听班一次
     RestAfterOnCallRule(),           # 90  - 规则3: 值班规则
+    NoConsecutiveWeekendRule(),      # 85  - 规则5: 避免连续周末值班
     NoConsecutiveWeekdayRule(),      # 80  - 规则4: 避免重复排班
 ]
