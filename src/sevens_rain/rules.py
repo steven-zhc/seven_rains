@@ -61,8 +61,12 @@ class MinimumOnCallPerWeekRule(SchedulingRule):
     
     def validate(self, employee: str, day: int, day_type: DayType, 
                 week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
-        """This rule is enforced during assignment logic, not validation."""
-        return True  # Always valid - enforced during assignment
+        """
+        This rule is primarily enforced during assignment logic via _ensure_minimum_oncall_per_week.
+        This validation helps prioritize assignments to employees who still need on-call duty.
+        """
+        # This rule doesn't block assignments - it's enforced positively in the scheduler
+        return True
     
     def get_priority(self) -> int:
         return 100  # Match documentation priority
@@ -146,27 +150,6 @@ class NoConsecutiveWeekdayRule(SchedulingRule):
 
 
 
-class TwoOnCallPerWeekRule(SchedulingRule):
-    """Rule: Each employee can have up to two on-call days per week."""
-    
-    def validate(self, employee: str, day: int, day_type: DayType, 
-                week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
-        """Check if employee already has 2 on-call assignments this week."""
-        if day_type != DayType.ON_CALL:
-            return True
-            
-        # Count employee's on-call days this week
-        employee_schedule = week_plan.get_employee_schedule(employee)
-        current_oncall_count = sum(1 for dt in employee_schedule if dt == DayType.ON_CALL)
-        
-        return current_oncall_count < 2  # Allow up to 2 on-call days
-    
-    def get_priority(self) -> int:
-        return 70
-    
-    def get_name(self) -> str:
-        return "Max Two On-Call Per Week"
-
 
 class RestAfterOnCallRule(SchedulingRule):
     """Rule: Comprehensive rest requirements after each day's on-call duty."""
@@ -246,46 +229,13 @@ class RestAfterOnCallRule(SchedulingRule):
         return "Rest After On-Call"
 
 
-class WeekendRestPreferenceRule(SchedulingRule):
-    """Rule: Prefer weekend rest unless on-call or already resting."""
-    
-    def validate(self, employee: str, day: int, day_type: DayType, 
-                week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
-        """This is a preference rule, always valid but influences assignment."""
-        return True  # Preference rule - doesn't block assignments
-    
-    def get_priority(self) -> int:
-        return 20  # Low priority - preference only
-    
-    def get_name(self) -> str:
-        return "Weekend Rest Preference"
 
 
-class FairRotationRule(SchedulingRule):
-    """Rule: Ensure fair distribution of on-call duties."""
-    
-    def validate(self, employee: str, day: int, day_type: DayType, 
-                week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
-        """Check if assignment maintains fair distribution."""
-        if day_type != DayType.ON_CALL:
-            return True
-            
-        # This could implement complex fairness logic
-        # For now, just allow all assignments
-        return True
-    
-    def get_priority(self) -> int:
-        return 30
-    
-    def get_name(self) -> str:
-        return "Fair Rotation"
-
-
-# Default rule set - 5 rules with weekend fairness
+# Default rule set - 5 rules strictly following documentation
 DEFAULT_RULES = [
     DailyOnCallCoverageRule(),       # 110 - 规则1: 每日值班覆盖
     MinimumOnCallPerWeekRule(),      # 100 - 规则2: 每人每周至少听班一次
     RestAfterOnCallRule(),           # 90  - 规则3: 值班规则
-    NoConsecutiveWeekendRule(),      # 85  - 规则5: 避免连续周末值班
-    NoConsecutiveWeekdayRule(),      # 80  - 规则4: 避免重复排班
+    NoConsecutiveWeekendRule(),      # 85  - 规则4: 避免连续周末值班
+    NoConsecutiveWeekdayRule(),      # 80  - 规则5: 避免重复排班
 ]

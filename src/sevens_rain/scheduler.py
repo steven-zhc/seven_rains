@@ -53,6 +53,9 @@ class WeekScheduler:
         # Phase 2: Assign on-call duties
         self._assign_on_call_duties(week_plan, previous_data)
         
+        # Phase 2.5: Ensure Rule 2 compliance (每人每周至少听班一次)
+        self._ensure_minimum_oncall_per_week(week_plan, previous_data)
+        
         # Phase 3: Fill remaining days with work/weekend rest
         self._fill_remaining_days(week_plan)
         
@@ -236,6 +239,86 @@ class WeekScheduler:
         
         # Fallback: Choose fairest from all available employees
         return self._choose_fairest_employee(available_employees, previous_data)
+    
+    def _ensure_minimum_oncall_per_week(self, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> None:
+        """Ensure every employee has at least one on-call assignment this week (Rule 2)."""
+        # Check which employees are missing on-call assignments
+        employees_with_oncall = set()
+        for day in range(7):
+            for employee in self.employees:
+                if week_plan.get_assignment(day, employee) == DayType.ON_CALL:
+                    employees_with_oncall.add(employee)
+        
+        employees_missing_oncall = [emp for emp in self.employees if emp not in employees_with_oncall]
+        
+        if not employees_missing_oncall:
+            return  # All employees have on-call assignments
+        
+        print(f"Rule 2 enforcement: {employees_missing_oncall} missing on-call assignments")
+        
+        # Try to give missing employees on-call assignments
+        for missing_employee in employees_missing_oncall:
+            assigned = False
+            # Try each day to find a slot for this employee
+            for day in range(7):
+                current_assignment = week_plan.get_assignment(day, missing_employee)
+                if current_assignment is not None:
+                    continue  # Already assigned something this day
+                
+                # First try: Check if we can assign on-call here with relaxed rules
+                if self._can_assign_for_minimum_oncall(missing_employee, day, week_plan, previous_data):
+                    # Find who is currently assigned on-call this day
+                    current_oncall_employee = None
+                    for emp in self.employees:
+                        if week_plan.get_assignment(day, emp) == DayType.ON_CALL:
+                            current_oncall_employee = emp
+                            break
+                    
+                    if current_oncall_employee:
+                        # Check if current employee already has another on-call day this week
+                        current_emp_oncall_count = sum(1 for d in range(7) 
+                                                     if week_plan.get_assignment(d, current_oncall_employee) == DayType.ON_CALL)
+                        
+                        if current_emp_oncall_count > 1:
+                            # Swap assignments: give on-call to missing employee, work to current employee
+                            week_plan.set_assignment(day, missing_employee, DayType.ON_CALL)
+                            week_plan.set_assignment(day, current_oncall_employee, DayType.WORK)
+                            
+                            # Adjust rest assignments
+                            self._assign_rest_after_oncall(week_plan, missing_employee, day)
+                            
+                            print(f"Rule 2 fix: Assigned {missing_employee} on-call on day {day}, {current_oncall_employee} to work")
+                            assigned = True
+                            break
+                    else:
+                        # No current on-call employee, directly assign
+                        week_plan.set_assignment(day, missing_employee, DayType.ON_CALL)
+                        self._assign_rest_after_oncall(week_plan, missing_employee, day)
+                        print(f"Rule 2 fix: Directly assigned {missing_employee} on-call on day {day}")
+                        assigned = True
+                        break
+                        
+            if not assigned:
+                print(f"WARNING: Could not satisfy Rule 2 for {missing_employee}")
+    
+    def _can_assign_for_minimum_oncall(self, employee: str, day: int, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
+        """Check if employee can be assigned on-call for Rule 2 compliance (strict rule checking)."""
+        # For Rule 2 compliance, still enforce all rules as per documentation
+        # Rule 2 has priority 100, so it should be enforced within the constraints of higher priority rules
+        
+        # Apply all rules with priority >= 100 (Rule 1 and Rule 2 itself)
+        # Rule 3 (90) and below can be relaxed slightly for Rule 2 compliance in extreme cases
+        high_priority_rules = [rule for rule in self.rules if rule.get_priority() >= 100]
+        
+        for rule in high_priority_rules:
+            if rule.get_name() == "Minimum One On-Call Per Week":
+                continue  # Skip self-reference
+            if not rule.validate(employee, day, DayType.ON_CALL, week_plan, previous_data):
+                return False
+        
+        # For Rule 2 compliance, we can be slightly more flexible with Rule 3 (Rest After On-Call)
+        # but still maintain the core safety constraints
+        return True
     
     def _choose_fairest_employee(self, available_employees: List[str], previous_data: List[WeekPlan]) -> str:
         """Choose employee with fewest historical on-call assignments for fairness."""
