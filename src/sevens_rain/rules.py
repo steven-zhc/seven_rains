@@ -101,6 +101,7 @@ class NoConsecutiveWeekendRule(SchedulingRule):
         
         # If employee was on weekend on-call last week, don't assign this weekend
         if employee in last_weekend_saturday or employee in last_weekend_sunday:
+            print(f"规则4阻止: {employee} 上周末值班，本周末不能再值班 (day={day})")
             return False
         
         # Also check if we're in the second weekend of a month (additional protection)
@@ -119,7 +120,7 @@ class NoConsecutiveWeekendRule(SchedulingRule):
         return True
     
     def get_priority(self) -> int:
-        return 85  # Between RestAfterOnCallRule(90) and NoConsecutiveWeekdayRule(80)
+        return 88  # Higher priority to prevent weekend burnout
     
     def get_name(self) -> str:
         return "No Consecutive Weekend On-Call"
@@ -186,9 +187,6 @@ class RestAfterOnCallRule(SchedulingRule):
             
             # Monday restrictions
             if day == 0:  # Monday
-                # Thursday on-call → Mon work (cannot be on-call)
-                if employee in last_week.get_on_call_employees(3):  # Thursday
-                    return False  # Should be work, not on-call
                 # Friday on-call → Mon rest
                 if employee in last_week.get_on_call_employees(4):  # Friday
                     return False
@@ -201,24 +199,12 @@ class RestAfterOnCallRule(SchedulingRule):
             
             # Tuesday restrictions  
             elif day == 1:  # Tuesday
-                # Friday on-call → Tue work (cannot be on-call)
-                if employee in last_week.get_on_call_employees(4):  # Friday
-                    return False  # Should be work, not on-call
                 # Saturday on-call → Tue rest
                 if employee in last_week.get_on_call_employees(5):  # Saturday
                     return False
                 # Sunday on-call → Tue rest
                 if employee in last_week.get_on_call_employees(6):  # Sunday
                     return False
-                    
-            # Wednesday restrictions
-            elif day == 2:  # Wednesday  
-                # Saturday on-call → Wed work (cannot be on-call)
-                if employee in last_week.get_on_call_employees(5):  # Saturday
-                    return False  # Should be work, not on-call
-                # Sunday on-call → Wed work (cannot be on-call)
-                if employee in last_week.get_on_call_employees(6):  # Sunday
-                    return False  # Should be work, not on-call
         
         return True
     
@@ -236,6 +222,6 @@ DEFAULT_RULES = [
     DailyOnCallCoverageRule(),       # 110 - 规则1: 每日值班覆盖
     MinimumOnCallPerWeekRule(),      # 100 - 规则2: 每人每周至少听班一次
     RestAfterOnCallRule(),           # 90  - 规则3: 值班规则
-    NoConsecutiveWeekendRule(),      # 85  - 规则4: 避免连续周末值班
+    NoConsecutiveWeekendRule(),      # 88  - 规则4: 避免连续周末值班
     NoConsecutiveWeekdayRule(),      # 80  - 规则5: 避免重复排班
 ]

@@ -25,7 +25,7 @@ EMPLOYEES = [
 # Global instances for new architecture
 storage = PlanStorage("plan.json")
 scheduler = WeekScheduler(EMPLOYEES, DEFAULT_RULES)
-excel_generator = ExcelGenerator(EMPLOYEES, storage)
+excel_generator = ExcelGenerator(EMPLOYEES, storage, scheduler)
 
 
 def extract_real_employee_names(file_path: str) -> List[str]:
@@ -141,7 +141,7 @@ def main(target_year: int = None, target_month: int = None) -> None:
             global EMPLOYEES, scheduler, excel_generator
             EMPLOYEES = real_employees
             scheduler = WeekScheduler(EMPLOYEES, DEFAULT_RULES)
-            excel_generator = ExcelGenerator(EMPLOYEES, storage)
+            excel_generator = ExcelGenerator(EMPLOYEES, storage, scheduler)
         else:
             print(f"Using hardcoded employees: {', '.join(EMPLOYEES)}")
     else:

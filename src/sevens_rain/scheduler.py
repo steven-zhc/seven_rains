@@ -47,6 +47,13 @@ class WeekScheduler:
             }
         )
         
+        # Try CSP-based approach first for complete rule satisfaction
+        if self._generate_with_csp(week_plan, previous_data):
+            return week_plan
+        
+        # Fallback to original method if CSP fails  
+        print("⚠️ CSP approach failed, using original method")
+        
         # Phase 1: Assign mandatory rest (from previous on-call)
         self._assign_mandatory_rest(week_plan, previous_data)
         
@@ -60,6 +67,108 @@ class WeekScheduler:
         self._fill_remaining_days(week_plan)
         
         return week_plan
+    
+    def _generate_with_csp(self, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
+        """Generate week plan using Constraint Satisfaction Problem approach."""
+        print("🧠 Trying CSP approach for complete rule satisfaction")
+        
+        # Reset all assignments
+        for day in range(7):
+            for employee in self.employees:
+                week_plan.set_assignment(day, employee, None)
+        
+        # Phase 1: Assign mandatory constraints first
+        self._assign_mandatory_rest(week_plan, previous_data)
+        
+        # Phase 2: Use backtracking to assign on-call duties with all constraints
+        if self._backtrack_oncall_assignment(week_plan, previous_data, 0):
+            # Phase 3: Fill remaining days
+            self._fill_remaining_days(week_plan)
+            print("✅ CSP approach succeeded - all rules satisfied")
+            return True
+        else:
+            print("❌ CSP approach failed - no valid solution found")
+            return False
+    
+    def _backtrack_oncall_assignment(self, week_plan: WeekPlan, previous_data: List[WeekPlan], day: int) -> bool:
+        """Backtracking algorithm to assign on-call duties satisfying all constraints."""
+        if day >= 7:
+            # Check if Rule 2 is satisfied (every employee has at least one on-call)
+            return self._check_rule2_satisfied(week_plan)
+        
+        # Try assigning each employee to on-call on this day
+        for employee in self.employees:
+            # Check if this employee can be assigned on-call on this day
+            if self._can_assign_oncall_csp(employee, day, week_plan, previous_data):
+                # Make assignment
+                week_plan.set_assignment(day, employee, DayType.ON_CALL)
+                self._assign_rest_after_oncall(week_plan, employee, day)
+                
+                # Recursively try next day
+                if self._backtrack_oncall_assignment(week_plan, previous_data, day + 1):
+                    return True
+                
+                # Backtrack if this doesn't lead to solution
+                self._remove_oncall_assignment(week_plan, employee, day)
+        
+        return False  # No valid assignment for this day
+    
+    def _can_assign_oncall_csp(self, employee: str, day: int, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
+        """Check if employee can be assigned on-call considering ALL constraints for CSP."""
+        # Check if already assigned something on this day
+        if week_plan.get_assignment(day, employee) is not None:
+            return False
+        
+        # Check if someone is already on-call this day
+        for emp in self.employees:
+            if week_plan.get_assignment(day, emp) == DayType.ON_CALL:
+                return False
+        
+        # Check if this day is mandatory work day (cannot be on-call) - same week
+        if self._is_mandatory_work_same_week(employee, day, week_plan):
+            return False
+            
+        # Check if this day is mandatory work day (cannot be on-call) - cross week
+        if self._is_mandatory_work(employee, day, previous_data):
+            return False
+        
+        # Check all rules
+        return self._validate_assignment(employee, day, DayType.ON_CALL, week_plan, previous_data)
+    
+    def _check_rule2_satisfied(self, week_plan: WeekPlan) -> bool:
+        """Check if Rule 2 is satisfied (every employee has at least one on-call)."""
+        for employee in self.employees:
+            oncall_count = sum(1 for day in range(7) 
+                             if week_plan.get_assignment(day, employee) == DayType.ON_CALL)
+            if oncall_count == 0:
+                return False
+        return True
+    
+    def _remove_oncall_assignment(self, week_plan: WeekPlan, employee: str, day: int):
+        """Remove on-call assignment and its associated rest days for backtracking."""
+        week_plan.set_assignment(day, employee, None)
+        
+        # Remove rest assignments that were added for this on-call duty
+        if day == 0:  # Monday on-call -> Tuesday rest
+            if day + 1 < 7 and week_plan.get_assignment(day + 1, employee) == DayType.REST:
+                week_plan.set_assignment(day + 1, employee, None)
+        elif day == 1:  # Tuesday on-call -> Wednesday rest
+            if day + 1 < 7 and week_plan.get_assignment(day + 1, employee) == DayType.REST:
+                week_plan.set_assignment(day + 1, employee, None)
+        elif day == 2:  # Wednesday on-call -> Thursday rest
+            if day + 1 < 7 and week_plan.get_assignment(day + 1, employee) == DayType.REST:
+                week_plan.set_assignment(day + 1, employee, None)
+        elif day == 3:  # Thursday on-call -> Fri+Sat+Sun rest
+            for rest_day in [4, 5, 6]:
+                if rest_day < 7 and week_plan.get_assignment(rest_day, employee) == DayType.REST:
+                    week_plan.set_assignment(rest_day, employee, None)
+        elif day == 4:  # Friday on-call -> Sat+Sun rest
+            for rest_day in [5, 6]:
+                if rest_day < 7 and week_plan.get_assignment(rest_day, employee) == DayType.REST:
+                    week_plan.set_assignment(rest_day, employee, None)
+        elif day == 5:  # Saturday on-call -> Sunday rest
+            if day + 1 < 7 and week_plan.get_assignment(day + 1, employee) == DayType.REST:
+                week_plan.set_assignment(day + 1, employee, None)
     
     def _assign_mandatory_rest(self, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> None:
         """Assign mandatory rest days based on previous week's on-call according to Rule 3."""
@@ -125,14 +234,38 @@ class WeekScheduler:
                 # No available employees - this should not happen with DailyOnCallCoverageRule
                 # Try to find ANY employee who can be assigned (emergency assignment)
                 print(f"WARNING: No available employees for day {day}, trying emergency assignment")
+                
+                # First try: Find employee who violates only low-priority rules
+                emergency_assigned = False
                 for employee in self.employees:
                     current_assignment = week_plan.get_assignment(day, employee)
                     if current_assignment is None:  # Not assigned anything yet
-                        week_plan.set_assignment(day, employee, DayType.ON_CALL)
-                        assignments_made += 1
-                        self._assign_rest_after_oncall(week_plan, employee, day)
-                        print(f"Emergency assignment: {employee} on day {day}")
-                        break
+                        # Check if this violates high-priority rules (>=85, including weekend rule)
+                        high_priority_violation = False
+                        for rule in self.rules:
+                            if rule.get_priority() >= 88:  # Don't violate weekend rule (now priority 88)
+                                if not rule.validate(employee, day, DayType.ON_CALL, week_plan, previous_data):
+                                    high_priority_violation = True
+                                    break
+                        
+                        if not high_priority_violation:
+                            week_plan.set_assignment(day, employee, DayType.ON_CALL)
+                            assignments_made += 1
+                            self._assign_rest_after_oncall(week_plan, employee, day)
+                            print(f"Emergency assignment (respecting high-priority rules): {employee} on day {day}")
+                            emergency_assigned = True
+                            break
+                
+                # Last resort: assign to anyone if absolutely necessary
+                if not emergency_assigned:
+                    for employee in self.employees:
+                        current_assignment = week_plan.get_assignment(day, employee)
+                        if current_assignment is None:  # Not assigned anything yet
+                            week_plan.set_assignment(day, employee, DayType.ON_CALL)
+                            assignments_made += 1
+                            self._assign_rest_after_oncall(week_plan, employee, day)
+                            print(f"CRITICAL: Emergency assignment violating rules: {employee} on day {day}")
+                            break
     
     def _assign_rest_after_oncall(self, week_plan: WeekPlan, employee: str, oncall_day: int) -> None:
         """Assign rest day(s) after on-call duty according to detailed rules."""
@@ -240,8 +373,89 @@ class WeekScheduler:
         # Fallback: Choose fairest from all available employees
         return self._choose_fairest_employee(available_employees, previous_data)
     
+    def _intelligent_rule2_compliance(self, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
+        """
+        Intelligent redistribution of on-call assignments to satisfy Rule 2 without violating other rules.
+        Returns True if successful, False if needs fallback approach.
+        """
+        # Check which employees are missing on-call assignments
+        employees_with_oncall = set()
+        for day in range(7):
+            for employee in self.employees:
+                if week_plan.get_assignment(day, employee) == DayType.ON_CALL:
+                    employees_with_oncall.add(employee)
+        
+        employees_missing_oncall = [emp for emp in self.employees if emp not in employees_with_oncall]
+        
+        if not employees_missing_oncall:
+            return True  # All employees have on-call assignments
+        
+        print(f"🎯 Intelligent Rule 2 compliance: attempting to help {employees_missing_oncall}")
+        
+        # Try to find swaps that don't violate any rules
+        for missing_employee in employees_missing_oncall:
+            success = self._find_valid_oncall_swap(missing_employee, week_plan, previous_data)
+            if success:
+                print(f"✅ Successfully assigned {missing_employee} through intelligent swapping")
+            else:
+                print(f"❌ Could not assign {missing_employee} without rule violations")
+                return False  # Need fallback approach
+        
+        return True  # All missing employees successfully assigned
+    
+    def _find_valid_oncall_swap(self, missing_employee: str, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
+        """Find a valid swap that gives missing_employee an on-call assignment without violating any rules."""
+        
+        # Try all days to see if we can assign missing_employee to on-call
+        for target_day in range(7):
+            # Check if missing_employee can be assigned on-call on this day
+            if not self._can_assign_oncall(missing_employee, target_day, week_plan, previous_data):
+                continue
+                
+            # Find who is currently assigned on-call on this day
+            current_oncall = None
+            for emp in self.employees:
+                if week_plan.get_assignment(target_day, emp) == DayType.ON_CALL:
+                    current_oncall = emp
+                    break
+            
+            if not current_oncall:
+                # No one assigned, directly assign
+                week_plan.set_assignment(target_day, missing_employee, DayType.ON_CALL)
+                self._assign_rest_after_oncall(week_plan, missing_employee, target_day)
+                return True
+            
+            # Check if we can swap without creating Rule 2 violation for current_oncall
+            current_oncall_count = sum(1 for d in range(7) 
+                                     if d != target_day and week_plan.get_assignment(d, current_oncall) == DayType.ON_CALL)
+            
+            if current_oncall_count == 0:
+                # This swap would violate Rule 2 for current_oncall
+                continue
+                
+            # Try different assignment types for current_oncall
+            for new_assignment in [DayType.WORK, DayType.REST]:
+                # Check if this assignment is valid for current_oncall
+                if self._validate_assignment(current_oncall, target_day, new_assignment, week_plan, previous_data):
+                    # Make the swap
+                    week_plan.set_assignment(target_day, missing_employee, DayType.ON_CALL)
+                    week_plan.set_assignment(target_day, current_oncall, new_assignment)
+                    self._assign_rest_after_oncall(week_plan, missing_employee, target_day)
+                    return True
+        
+        return False  # Could not find valid swap
+    
+    def _can_assign_oncall(self, employee: str, day: int, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
+        """Check if employee can be assigned on-call on this day without violating ANY rules."""
+        return self._validate_assignment(employee, day, DayType.ON_CALL, week_plan, previous_data)
+    
     def _ensure_minimum_oncall_per_week(self, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> None:
         """Ensure every employee has at least one on-call assignment this week (Rule 2)."""
+        # First, try intelligent redistribution without violating any rules
+        if not self._intelligent_rule2_compliance(week_plan, previous_data):
+            # If that fails, use preemptive protection
+            self._preemptive_rule2_protection(week_plan, previous_data)
+        
         # Check which employees are missing on-call assignments
         employees_with_oncall = set()
         for day in range(7):
@@ -256,7 +470,26 @@ class WeekScheduler:
         
         print(f"Rule 2 enforcement: {employees_missing_oncall} missing on-call assignments")
         
+        # Debug: Show current on-call assignments for verification
+        print("  Current on-call assignments this week:")
+        for day in range(7):
+            day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+            oncall_employees = []
+            for emp in self.employees:
+                if week_plan.get_assignment(day, emp) == DayType.ON_CALL:
+                    oncall_employees.append(emp)
+            print(f"    {day_names[day]}: {oncall_employees}")
+        
+        print("  Employee on-call counts:")
+        for emp in self.employees:
+            count = sum(1 for day in range(7) if week_plan.get_assignment(day, emp) == DayType.ON_CALL)
+            status = "❌" if count == 0 else "✅"
+            print(f"    {emp}: {count} times {status}")
+        
         # Try to give missing employees on-call assignments
+        # Use a smarter approach: distribute missing employees across different days
+        print(f"  Attempting to distribute {len(employees_missing_oncall)} missing employees across different days...")
+        
         for missing_employee in employees_missing_oncall:
             assigned = False
             # Try each day to find a slot for this employee
@@ -280,44 +513,284 @@ class WeekScheduler:
                                                      if week_plan.get_assignment(d, current_oncall_employee) == DayType.ON_CALL)
                         
                         if current_emp_oncall_count > 1:
-                            # Swap assignments: give on-call to missing employee, work to current employee
+                            # Rule 2 has priority 100, but should respect Rule 4 (88) for weekend fairness
+                            # Check Rule 1 (110) and Rule 4 (88+) to maintain weekend fairness
+                            temp_violations = False
+                            for rule in self.rules:
+                                if rule.get_priority() >= 88:  # Rule 1 (110) and Rule 4 (88)
+                                    if not rule.validate(missing_employee, day, DayType.ON_CALL, week_plan, previous_data):
+                                        temp_violations = True
+                                        print(f"Rule 2 swap blocked by {rule.get_name()} for {missing_employee} on day {day}")
+                                        break
+                            
+                            if not temp_violations:
+                                # Check if current employee would become violating Rule 2 after swap
+                                current_emp_remaining_oncall = sum(1 for d in range(7) 
+                                                                   if d != day and week_plan.get_assignment(d, current_oncall_employee) == DayType.ON_CALL)
+                                
+                                if current_emp_remaining_oncall == 0:
+                                    print(f"Rule 2 swap BLOCKED: {current_oncall_employee} would have 0 on-call days after giving day {day} to {missing_employee}")
+                                    continue  # Don't make this swap, it would create another Rule 2 violation
+                                
+                                # Swap assignments: give on-call to missing employee, work to current employee
+                                week_plan.set_assignment(day, missing_employee, DayType.ON_CALL)
+                                week_plan.set_assignment(day, current_oncall_employee, DayType.WORK)
+                                
+                                # Adjust rest assignments
+                                self._assign_rest_after_oncall(week_plan, missing_employee, day)
+                                
+                                print(f"Rule 2 fix: Assigned {missing_employee} on-call on day {day}, {current_oncall_employee} to work")
+                                assigned = True
+                                break
+                            else:
+                                print(f"Rule 2 swap blocked by higher priority rules for {missing_employee} on day {day}")
+                        else:
+                            # Current employee only has 1 on-call, but we still need to respect weekend fairness
+                            # Check Rule 1 (110) and Rule 4 (88+) to maintain weekend fairness
+                            temp_violations = False
+                            for rule in self.rules:
+                                if rule.get_priority() >= 88:  # Rule 1 (110) and Rule 4 (88)
+                                    if not rule.validate(missing_employee, day, DayType.ON_CALL, week_plan, previous_data):
+                                        temp_violations = True
+                                        print(f"Rule 2 forced assignment blocked by {rule.get_name()} for {missing_employee} on day {day}")
+                                        break
+                            
+                            if not temp_violations:
+                                # Force assignment: give on-call to missing employee, work to current employee
+                                # But this would leave current employee with 0 on-call days, violating Rule 2
+                                print(f"Rule 2 FORCED assignment BLOCKED: {current_oncall_employee} would have 0 on-call days")
+                                continue  # This would create another Rule 2 violation
+                    else:
+                        # No current on-call employee, directly assign but respect weekend fairness
+                        # Check Rule 1 (110) and Rule 4 (88+) to maintain weekend fairness
+                        temp_violations = False
+                        for rule in self.rules:
+                            if rule.get_priority() >= 88:  # Rule 1 (110) and Rule 4 (88)
+                                if not rule.validate(missing_employee, day, DayType.ON_CALL, week_plan, previous_data):
+                                    temp_violations = True
+                                    print(f"Rule 2 direct assignment blocked by {rule.get_name()} for {missing_employee} on day {day}")
+                                    break
+                        
+                        if not temp_violations:
                             week_plan.set_assignment(day, missing_employee, DayType.ON_CALL)
-                            week_plan.set_assignment(day, current_oncall_employee, DayType.WORK)
-                            
-                            # Adjust rest assignments
                             self._assign_rest_after_oncall(week_plan, missing_employee, day)
-                            
-                            print(f"Rule 2 fix: Assigned {missing_employee} on-call on day {day}, {current_oncall_employee} to work")
+                            print(f"Rule 2 fix: Directly assigned {missing_employee} on-call on day {day}")
                             assigned = True
                             break
-                    else:
-                        # No current on-call employee, directly assign
-                        week_plan.set_assignment(day, missing_employee, DayType.ON_CALL)
-                        self._assign_rest_after_oncall(week_plan, missing_employee, day)
-                        print(f"Rule 2 fix: Directly assigned {missing_employee} on-call on day {day}")
-                        assigned = True
-                        break
+                        else:
+                            print(f"Rule 2 direct assignment blocked by higher priority rules for {missing_employee} on day {day}")
                         
             if not assigned:
-                print(f"WARNING: Could not satisfy Rule 2 for {missing_employee}")
+                print(f"CRITICAL: Rule 2 enforcement failed for {missing_employee} - trying LAST RESORT")
+                # Last resort: Force assign by taking over ANY day, but respect mandatory REST
+                for day in range(7):
+                    current_assignment = week_plan.get_assignment(day, missing_employee)
+                    if current_assignment == DayType.ON_CALL:
+                        continue  # Already on-call, skip
+                    
+                    # Check if this is mandatory REST due to Rule 3 - don't override
+                    if (current_assignment == DayType.REST and 
+                        self._is_mandatory_rest(missing_employee, day, previous_data)):
+                        continue  # Don't override mandatory rest assignments
+                    
+                    # Check if this employee must work (cannot be on-call) due to Rule 3 - don't assign on-call
+                    if self._is_mandatory_work(missing_employee, day, previous_data):
+                        continue  # Don't assign on-call if employee must work
+                    
+                    # We can override WORK and non-mandatory REST assignments for Rule 2
+                    
+                    # Find who is currently assigned on-call this day
+                    current_oncall_employee = None
+                    for emp in self.employees:
+                        if week_plan.get_assignment(day, emp) == DayType.ON_CALL:
+                            current_oncall_employee = emp
+                            break
+                    
+                    if current_oncall_employee:
+                        # Don't take from employees who also need on-call assignments
+                        current_emp_oncall_count = sum(1 for d in range(7) 
+                                                     if week_plan.get_assignment(d, current_oncall_employee) == DayType.ON_CALL)
+                        
+                        if current_emp_oncall_count <= 1:  # This would be their only on-call assignment
+                            print(f"LAST RESORT: Cannot take from {current_oncall_employee} - they need their on-call assignment too")
+                            continue  # Find a different day/employee
+                        
+                        print(f"LAST RESORT: Taking day {day} from {current_oncall_employee} for {missing_employee}")
+                        # For Rule 2 enforcement, only respect Rule 1 (daily coverage) and Rule 4 (weekend fairness)
+                        # Check only the most critical rules
+                        critical_violation = False
+                        # Strict rule compliance: respect ALL rules, never violate any rule
+                        # This ensures we maintain integrity of all 5 rules
+                        rule_violation = False
+                        for rule in self.rules:
+                            if not rule.validate(missing_employee, day, DayType.ON_CALL, week_plan, previous_data):
+                                rule_violation = True
+                                print(f"STRICT COMPLIANCE: Cannot assign {missing_employee} on day {day} due to {rule.get_name()}")
+                                break
+                        
+                        if not rule_violation:
+                            week_plan.set_assignment(day, missing_employee, DayType.ON_CALL)
+                            week_plan.set_assignment(day, current_oncall_employee, DayType.WORK)
+                            self._assign_rest_after_oncall(week_plan, missing_employee, day)
+                            assigned = True
+                            print(f"✅ STRICT COMPLIANCE SUCCESS: {missing_employee} assigned on-call on day {day}")
+                            break
+                        else:
+                            continue  # Try next day
+                
+                if not assigned:
+                    print(f"⚠️ STRICT COMPLIANCE: Cannot satisfy Rule 2 for {missing_employee} without violating other rules")
+    
+    def _is_mandatory_rest(self, employee: str, day: int, previous_data: List[WeekPlan]) -> bool:
+        """Check if this employee must rest on this day due to Rule 3 cross-week constraints."""
+        if not previous_data:
+            return False
+            
+        last_week = previous_data[0]
+        
+        # Monday rest is mandatory if employee was on-call Friday, Saturday, or Sunday last week
+        if day == 0:  # Monday
+            return (employee in last_week.get_on_call_employees(4) or  # Friday
+                   employee in last_week.get_on_call_employees(5) or   # Saturday  
+                   employee in last_week.get_on_call_employees(6))     # Sunday
+        
+        # Tuesday rest is mandatory if employee was on-call Saturday or Sunday last week
+        elif day == 1:  # Tuesday
+            return (employee in last_week.get_on_call_employees(5) or   # Saturday
+                   employee in last_week.get_on_call_employees(6))     # Sunday
+        
+        return False  # Other days don't have mandatory cross-week rest
+    
+    def _is_mandatory_work(self, employee: str, day: int, previous_data: List[WeekPlan]) -> bool:
+        """Check if this employee must work (cannot be on-call) on this day due to Rule 3 cross-week constraints."""
+        if not previous_data:
+            return False
+            
+        last_week = previous_data[0]
+        
+        # Cross-week mandatory work constraints from Rule 3:
+        if day == 0:  # Monday - mandatory work if Thursday on-call last week
+            return employee in last_week.get_on_call_employees(3)  # Thursday
+        elif day == 1:  # Tuesday - mandatory work if Friday on-call last week  
+            return employee in last_week.get_on_call_employees(4)  # Friday
+        elif day == 2:  # Wednesday - mandatory work if Saturday or Sunday on-call last week
+            return (employee in last_week.get_on_call_employees(5) or   # Saturday
+                   employee in last_week.get_on_call_employees(6))     # Sunday
+        
+        return False  # Other days don't have mandatory cross-week work restrictions
+    
+    def _is_mandatory_work_same_week(self, employee: str, day: int, week_plan: WeekPlan) -> bool:
+        """Check if this employee must work (cannot be on-call) on this day due to same-week Rule 3 constraints."""
+        # Same-week mandatory work constraints from Rule 3:
+        if day == 2:  # Wednesday - mandatory work if Monday on-call same week
+            return week_plan.get_assignment(0, employee) == DayType.ON_CALL
+        elif day == 3:  # Thursday - mandatory work if Tuesday on-call same week  
+            return week_plan.get_assignment(1, employee) == DayType.ON_CALL
+        elif day == 4:  # Friday - mandatory work if Wednesday on-call same week
+            return week_plan.get_assignment(2, employee) == DayType.ON_CALL
+        
+        return False
+    
+    def _preemptive_rule2_protection(self, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> None:
+        """Proactively identify employees at risk of Rule 2 violation and try to secure slots for them."""
+        if not previous_data:
+            return
+            
+        last_week = previous_data[0]
+        
+        # Identify employees who will have severely limited options this week due to Rule 3 and 4
+        high_risk_employees = []
+        
+        # print(f"🔍 预防性规则2保护分析 - 第{len(previous_data)+1}周")
+        
+        for employee in self.employees:
+            available_days = 0
+            restricted_days = []
+            
+            # Removed debug code for 包汀池
+            
+            for day in range(7):
+                # Check if this day is already assigned
+                if week_plan.get_assignment(day, employee) is not None:
+                    continue
+                    
+                # Check if this employee can be assigned on-call on this day
+                can_assign = True
+                blocking_rule = None
+                for rule in self.rules:
+                    if rule.get_priority() >= 88:  # High priority rules (Rule 1, 4)
+                        if not rule.validate(employee, day, DayType.ON_CALL, week_plan, previous_data):
+                            can_assign = False
+                            blocking_rule = rule.get_name()
+                            restricted_days.append(day)
+                            break
+                
+                # Removed debug code
+                
+                # Also check mandatory work constraint (Rule 3)  
+                if can_assign and self._is_mandatory_work(employee, day, previous_data):
+                    can_assign = False
+                    restricted_days.append(day)
+                    # Removed debug code
+                
+                if can_assign:
+                    available_days += 1
+            
+            # If employee has very limited options (≤2 days available), mark as high risk
+            if available_days <= 2:
+                high_risk_employees.append((employee, available_days, restricted_days))
+                print(f"DEBUG: {employee} identified as high-risk for Rule 2, only {available_days} available days")
+        
+        # Try to reserve slots for high-risk employees
+        high_risk_employees.sort(key=lambda x: x[1])  # Sort by available days (most constrained first)
+        
+        for employee, available_days, restricted_days in high_risk_employees:
+            if available_days == 0:
+                print(f"WARNING: {employee} has no available days for Rule 2 compliance")
+                continue
+                
+            # Try to secure at least one on-call assignment for this high-risk employee
+            for day in range(7):
+                current_assignment = week_plan.get_assignment(day, employee)
+                if current_assignment is not None:
+                    continue  # Already assigned
+                    
+                if day in restricted_days:
+                    continue  # This day is restricted for this employee
+                    
+                # Check if we can assign this employee on-call on this day
+                if self._validate_assignment(employee, day, DayType.ON_CALL, week_plan, previous_data):
+                    # Find current on-call employee for this day
+                    current_oncall = None
+                    for emp in self.employees:
+                        if week_plan.get_assignment(day, emp) == DayType.ON_CALL:
+                            current_oncall = emp
+                            break
+                    
+                    if current_oncall:
+                        # Check if current employee has multiple on-call assignments
+                        current_oncall_count = sum(1 for d in range(7) 
+                                                 if week_plan.get_assignment(d, current_oncall) == DayType.ON_CALL)
+                        
+                        if current_oncall_count > 1:
+                            # Swap: give this day to high-risk employee
+                            print(f"PREEMPTIVE: Reserving day {day} for high-risk {employee} (from {current_oncall})")
+                            week_plan.set_assignment(day, employee, DayType.ON_CALL)
+                            week_plan.set_assignment(day, current_oncall, DayType.WORK)
+                            self._assign_rest_after_oncall(week_plan, employee, day)
+                            break  # Found a slot for this employee
     
     def _can_assign_for_minimum_oncall(self, employee: str, day: int, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
-        """Check if employee can be assigned on-call for Rule 2 compliance (strict rule checking)."""
-        # For Rule 2 compliance, still enforce all rules as per documentation
-        # Rule 2 has priority 100, so it should be enforced within the constraints of higher priority rules
+        """Check if employee can be assigned on-call for Rule 2 compliance."""
+        # Rule 2 has priority 100, so it can override lower priority rules
+        # Only enforce rules with priority > 100 (currently only Rule 1: Daily Coverage)
         
-        # Apply all rules with priority >= 100 (Rule 1 and Rule 2 itself)
-        # Rule 3 (90) and below can be relaxed slightly for Rule 2 compliance in extreme cases
-        high_priority_rules = [rule for rule in self.rules if rule.get_priority() >= 100]
+        higher_priority_rules = [rule for rule in self.rules if rule.get_priority() > 100]
         
-        for rule in high_priority_rules:
-            if rule.get_name() == "Minimum One On-Call Per Week":
-                continue  # Skip self-reference
+        for rule in higher_priority_rules:
             if not rule.validate(employee, day, DayType.ON_CALL, week_plan, previous_data):
                 return False
         
-        # For Rule 2 compliance, we can be slightly more flexible with Rule 3 (Rest After On-Call)
-        # but still maintain the core safety constraints
         return True
     
     def _choose_fairest_employee(self, available_employees: List[str], previous_data: List[WeekPlan]) -> str:

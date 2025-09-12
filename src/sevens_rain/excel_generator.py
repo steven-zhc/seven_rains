@@ -12,17 +12,18 @@ from .scheduler import WeekScheduler
 class ExcelGenerator:
     """Generates beautiful Excel files from week plans with cross-month support."""
     
-    def __init__(self, employees: List[str], storage: PlanStorage):
+    def __init__(self, employees: List[str], storage: PlanStorage, scheduler: WeekScheduler = None):
         """
         Initialize Excel generator.
         
         Args:
             employees: List of employee names
             storage: PlanStorage instance for accessing week data
+            scheduler: Optional WeekScheduler instance (creates new one if None)
         """
         self.employees = employees
         self.storage = storage
-        self.scheduler = WeekScheduler(employees)
+        self.scheduler = scheduler or WeekScheduler(employees)
     
     def generate_month_schedule(self, year: int, month: int, 
                               output_path: str = None) -> str:
