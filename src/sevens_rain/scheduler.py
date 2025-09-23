@@ -99,8 +99,14 @@ class WeekScheduler:
             # Check if Rule 2 is satisfied (every employee has at least one on-call)
             return self._check_rule2_satisfied(week_plan)
         
-        # Try assigning each employee to on-call on this day
-        for employee in self.employees:
+        # Sort employees by fairness score for CSP (most fair first)
+        fairness_scores = self._calculate_comprehensive_fairness_scores(
+            self.employees, week_plan, previous_data
+        )
+        sorted_employees = sorted(self.employees, key=lambda emp: fairness_scores[emp])
+        
+        # Try assigning each employee to on-call on this day (prioritize fair assignment)
+        for employee in sorted_employees:
             # Check if this employee can be assigned on-call on this day
             if self._can_assign_oncall_csp(employee, day, week_plan, previous_data):
                 # Make assignment
@@ -389,29 +395,29 @@ class WeekScheduler:
         scores = {}
         
         for employee in employees:
-            # Factor 1: Historical on-call count (lower is better)
-            historical_count = 0
-            weeks_to_check = min(len(previous_data), 8)
-            for week_idx in range(weeks_to_check):
-                week = previous_data[week_idx]
-                for day in range(7):
-                    if employee in week.get_on_call_employees(day):
-                        # Recent weeks weighted more heavily
-                        weight = 1.0 - (week_idx * 0.1)
-                        historical_count += weight
+            # Factor 1: Total historical on-call count (stronger long-term fairness)
+            total_historical_count = self._calculate_total_historical_count(employee, previous_data)
             
             # Factor 2: Current week on-call count (lower is better)
             current_week_count = sum(1 for day in range(7) 
                                    if week_plan.get_assignment(day, employee) == DayType.ON_CALL)
             
-            # Factor 3: Recent workload intensity (避免连续高强度值班)
+            # Factor 3: Current month on-call count (prevent same person getting too many in one month)
+            current_month_count = self._calculate_current_month_oncall_count(employee, week_plan, previous_data)
+            
+            # Factor 4: Specific weekday balance (prevent same person always getting same weekday)
+            weekday_imbalance = self._calculate_weekday_imbalance_penalty(employee, previous_data)
+            
+            # Factor 5: Recent workload intensity (avoid consecutive heavy assignments)
             recent_intensity = self._calculate_recent_workload_intensity(employee, previous_data)
             
             # Composite score (lower is better for selection)
-            # Weight: 50% historical, 30% current week, 20% recent intensity
-            composite_score = (historical_count * 0.5 + 
-                             current_week_count * 3.0 +  # Current week weighted heavily
-                             recent_intensity * 0.2)
+            # Heavily emphasize long-term fairness and weekday balance
+            composite_score = (total_historical_count * 1.0 +      # Strong historical fairness
+                             current_week_count * 8.0 +           # Very strong current week penalty
+                             current_month_count * 3.0 +          # Strong monthly fairness
+                             weekday_imbalance * 2.0 +            # Weekday balance
+                             recent_intensity * 0.5)              # Light recent intensity
             
             scores[employee] = composite_score
         
@@ -436,6 +442,65 @@ class WeekScheduler:
             intensity += week_oncall_count * weight
         
         return intensity
+    
+    def _calculate_current_month_oncall_count(self, employee: str, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> float:
+        """Calculate employee's on-call count in current month to prevent overloading."""
+        current_month = week_plan.week_start.month
+        current_year = week_plan.week_start.year
+        
+        month_oncall_count = 0.0
+        
+        # Count from current week plan
+        for day in range(7):
+            if week_plan.get_assignment(day, employee) == DayType.ON_CALL:
+                month_oncall_count += 1
+        
+        # Count from previous weeks in same month
+        for week in previous_data:
+            if week.week_start.month == current_month and week.week_start.year == current_year:
+                for day in range(7):
+                    if employee in week.get_on_call_employees(day):
+                        month_oncall_count += 1
+        
+        return month_oncall_count
+    
+    def _calculate_total_historical_count(self, employee: str, previous_data: List[WeekPlan]) -> float:
+        """Calculate total historical on-call count for long-term fairness."""
+        total_count = 0.0
+        
+        # Count all historical on-call assignments (looking further back for true fairness)
+        for week in previous_data:
+            for day in range(7):
+                if employee in week.get_on_call_employees(day):
+                    total_count += 1
+        
+        return total_count
+    
+    def _calculate_weekday_imbalance_penalty(self, employee: str, previous_data: List[WeekPlan]) -> float:
+        """Calculate penalty for weekday imbalance to prevent same person always getting same weekday."""
+        weekday_counts = [0] * 7  # Monday to Sunday
+        
+        # Count historical assignments by weekday
+        for week in previous_data:
+            for day in range(7):
+                if employee in week.get_on_call_employees(day):
+                    weekday_counts[day] += 1
+        
+        # Calculate imbalance penalty
+        if sum(weekday_counts) == 0:
+            return 0.0
+        
+        # Find the most assigned weekdays
+        max_weekday_count = max(weekday_counts)
+        
+        # Heavily penalize if this employee has been assigned to high-frequency weekdays
+        # Tuesday (day 1) and Saturday (day 5) get extra penalty as they're problematic
+        tuesday_penalty = weekday_counts[1] * 2.0  # Tuesday gets double penalty
+        saturday_penalty = weekday_counts[5] * 2.0  # Saturday gets double penalty
+        
+        total_penalty = max_weekday_count + tuesday_penalty + saturday_penalty
+        
+        return total_penalty
     
     def _select_by_fairness_score(self, employees: List[str], fairness_scores: Dict[str, float]) -> str:
         """Select employee with the best (lowest) fairness score."""
