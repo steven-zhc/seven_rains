@@ -66,6 +66,9 @@ class WeekScheduler:
         # Phase 3: Fill remaining days with work/weekend rest
         self._fill_remaining_days(week_plan)
         
+        # Phase 4: Post-assignment fairness optimization
+        self._optimize_fairness_post_assignment(week_plan, previous_data)
+        
         return week_plan
     
     def _generate_with_csp(self, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
@@ -362,16 +365,240 @@ class WeekScheduler:
         if len(available_employees) == 1:
             return available_employees[0]
         
+        # Enhanced fairness-first approach
+        # First, calculate fairness scores for all available employees
+        fairness_scores = self._calculate_comprehensive_fairness_scores(
+            available_employees, week_plan, previous_data
+        )
+        
         # Rule 2: Prioritize employees who still need on-call assignment this week
         if employees_needing_oncall:
             employees_needing_and_available = [emp for emp in available_employees 
                                              if emp in employees_needing_oncall]
             if employees_needing_and_available:
-                # Among those who need on-call, choose the one with fewest historical assignments
-                return self._choose_fairest_employee(employees_needing_and_available, previous_data)
+                # Among those who need on-call, choose based on fairness scores
+                return self._select_by_fairness_score(employees_needing_and_available, fairness_scores)
         
-        # Fallback: Choose fairest from all available employees
-        return self._choose_fairest_employee(available_employees, previous_data)
+        # Fallback: Choose fairest from all available employees based on comprehensive scoring
+        return self._select_by_fairness_score(available_employees, fairness_scores)
+    
+    def _calculate_comprehensive_fairness_scores(self, employees: List[str], 
+                                               week_plan: WeekPlan, 
+                                               previous_data: List[WeekPlan]) -> Dict[str, float]:
+        """Calculate comprehensive fairness scores considering multiple factors."""
+        scores = {}
+        
+        for employee in employees:
+            # Factor 1: Historical on-call count (lower is better)
+            historical_count = 0
+            weeks_to_check = min(len(previous_data), 8)
+            for week_idx in range(weeks_to_check):
+                week = previous_data[week_idx]
+                for day in range(7):
+                    if employee in week.get_on_call_employees(day):
+                        # Recent weeks weighted more heavily
+                        weight = 1.0 - (week_idx * 0.1)
+                        historical_count += weight
+            
+            # Factor 2: Current week on-call count (lower is better)
+            current_week_count = sum(1 for day in range(7) 
+                                   if week_plan.get_assignment(day, employee) == DayType.ON_CALL)
+            
+            # Factor 3: Recent workload intensity (避免连续高强度值班)
+            recent_intensity = self._calculate_recent_workload_intensity(employee, previous_data)
+            
+            # Composite score (lower is better for selection)
+            # Weight: 50% historical, 30% current week, 20% recent intensity
+            composite_score = (historical_count * 0.5 + 
+                             current_week_count * 3.0 +  # Current week weighted heavily
+                             recent_intensity * 0.2)
+            
+            scores[employee] = composite_score
+        
+        return scores
+    
+    def _calculate_recent_workload_intensity(self, employee: str, previous_data: List[WeekPlan]) -> float:
+        """Calculate recent workload intensity to avoid consecutive heavy assignments."""
+        if not previous_data:
+            return 0.0
+        
+        # Look at last 2 weeks for intensity calculation
+        intensity = 0.0
+        weeks_to_check = min(len(previous_data), 2)
+        
+        for week_idx in range(weeks_to_check):
+            week = previous_data[week_idx]
+            week_oncall_count = sum(1 for day in range(7) 
+                                  if employee in week.get_on_call_employees(day))
+            
+            # Recent weeks have higher impact
+            weight = 2.0 - week_idx  # Week 0: weight=2.0, Week 1: weight=1.0
+            intensity += week_oncall_count * weight
+        
+        return intensity
+    
+    def _select_by_fairness_score(self, employees: List[str], fairness_scores: Dict[str, float]) -> str:
+        """Select employee with the best (lowest) fairness score."""
+        if not employees:
+            return employees[0] if employees else ""
+        
+        # Find minimum score
+        min_score = min(fairness_scores[emp] for emp in employees)
+        
+        # Get all employees with minimum score (with small tolerance)
+        tolerance = 0.1
+        best_employees = [emp for emp in employees 
+                         if fairness_scores[emp] <= min_score + tolerance]
+        
+        # If multiple employees have same score, use alphabetical order for consistency
+        best_employees.sort()
+        return best_employees[0]
+    
+    def _optimize_fairness_post_assignment(self, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> None:
+        """Optimize fairness after initial assignment by swapping assignments when beneficial."""
+        if not previous_data:
+            return
+            
+        print("🔄 Starting post-assignment fairness optimization...")
+        
+        # Calculate current fairness metrics
+        current_scores = self._calculate_comprehensive_fairness_scores(
+            self.employees, week_plan, previous_data
+        )
+        
+        # Identify potential beneficial swaps
+        improvements_made = 0
+        max_improvements = 3  # Limit iterations to prevent excessive changes
+        
+        for iteration in range(max_improvements):
+            swap_made = False
+            
+            # Try all possible day swaps between employees
+            for day1 in range(7):
+                for day2 in range(7):
+                    if day1 == day2:
+                        continue
+                        
+                    # Find employees assigned on these days
+                    emp1_oncall = None
+                    emp2_oncall = None
+                    
+                    for emp in self.employees:
+                        if week_plan.get_assignment(day1, emp) == DayType.ON_CALL:
+                            emp1_oncall = emp
+                        if week_plan.get_assignment(day2, emp) == DayType.ON_CALL:
+                            emp2_oncall = emp
+                    
+                    if not emp1_oncall or not emp2_oncall or emp1_oncall == emp2_oncall:
+                        continue
+                    
+                    # Check if swapping would improve fairness
+                    if self._would_swap_improve_fairness(emp1_oncall, emp2_oncall, day1, day2, 
+                                                       week_plan, previous_data, current_scores):
+                        # Verify swap doesn't violate any rules
+                        if self._can_swap_safely(emp1_oncall, emp2_oncall, day1, day2, 
+                                               week_plan, previous_data):
+                            # Perform the swap
+                            self._perform_oncall_swap(emp1_oncall, emp2_oncall, day1, day2, week_plan)
+                            
+                            # Update scores
+                            current_scores = self._calculate_comprehensive_fairness_scores(
+                                self.employees, week_plan, previous_data
+                            )
+                            
+                            improvements_made += 1
+                            swap_made = True
+                            print(f"✅ Fairness swap: {emp1_oncall}(day{day1}) ↔ {emp2_oncall}(day{day2})")
+                            break
+                
+                if swap_made:
+                    break
+            
+            if not swap_made:
+                break  # No more beneficial swaps found
+        
+        if improvements_made > 0:
+            print(f"🎯 Fairness optimization completed: {improvements_made} swaps made")
+        else:
+            print("✅ No fairness improvements needed")
+    
+    def _would_swap_improve_fairness(self, emp1: str, emp2: str, day1: int, day2: int,
+                                   week_plan: WeekPlan, previous_data: List[WeekPlan],
+                                   current_scores: Dict[str, float]) -> bool:
+        """Check if swapping two employees' on-call assignments would improve overall fairness."""
+        # Current scores
+        emp1_score = current_scores[emp1]
+        emp2_score = current_scores[emp2]
+        
+        # Calculate what scores would be after swap
+        # Temporarily perform swap calculation
+        temp_week_plan = self._create_temp_week_plan_copy(week_plan)
+        
+        # Simulate the swap
+        temp_week_plan.set_assignment(day1, emp1, None)
+        temp_week_plan.set_assignment(day2, emp2, None)
+        temp_week_plan.set_assignment(day1, emp2, DayType.ON_CALL)
+        temp_week_plan.set_assignment(day2, emp1, DayType.ON_CALL)
+        
+        # Calculate new scores
+        new_scores = self._calculate_comprehensive_fairness_scores(
+            [emp1, emp2], temp_week_plan, previous_data
+        )
+        
+        new_emp1_score = new_scores[emp1]
+        new_emp2_score = new_scores[emp2]
+        
+        # Check if swap reduces the unfairness gap
+        current_gap = abs(emp1_score - emp2_score)
+        new_gap = abs(new_emp1_score - new_emp2_score)
+        
+        # Improvement if gap decreases by meaningful amount
+        return new_gap < current_gap - 0.2
+    
+    def _can_swap_safely(self, emp1: str, emp2: str, day1: int, day2: int,
+                        week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
+        """Check if swapping two employees' assignments would violate any rules."""
+        # Check if emp2 can be assigned on-call on day1
+        if not self._validate_assignment(emp2, day1, DayType.ON_CALL, week_plan, previous_data):
+            return False
+        
+        # Check if emp1 can be assigned on-call on day2  
+        if not self._validate_assignment(emp1, day2, DayType.ON_CALL, week_plan, previous_data):
+            return False
+        
+        return True
+    
+    def _perform_oncall_swap(self, emp1: str, emp2: str, day1: int, day2: int, week_plan: WeekPlan) -> None:
+        """Perform the actual swap of on-call assignments between two employees."""
+        # Clear current assignments
+        week_plan.set_assignment(day1, emp1, None)
+        week_plan.set_assignment(day2, emp2, None)
+        
+        # Assign new on-call duties
+        week_plan.set_assignment(day1, emp2, DayType.ON_CALL)
+        week_plan.set_assignment(day2, emp1, DayType.ON_CALL)
+        
+        # Update rest assignments according to rules
+        self._assign_rest_after_oncall(week_plan, emp2, day1)
+        self._assign_rest_after_oncall(week_plan, emp1, day2)
+    
+    def _create_temp_week_plan_copy(self, week_plan: WeekPlan) -> WeekPlan:
+        """Create a temporary copy of week plan for simulation purposes."""
+        temp_plan = WeekPlan(
+            week_start=week_plan.week_start,
+            assignments={},
+            metadata=week_plan.metadata.copy()
+        )
+        
+        # Deep copy assignments
+        for day in range(7):
+            temp_plan.assignments[day] = {}
+            for emp in self.employees:
+                assignment = week_plan.get_assignment(day, emp)
+                if assignment is not None:
+                    temp_plan.assignments[day][emp] = assignment
+        
+        return temp_plan
     
     def _intelligent_rule2_compliance(self, week_plan: WeekPlan, previous_data: List[WeekPlan]) -> bool:
         """
@@ -799,23 +1026,38 @@ class WeekScheduler:
         historical_counts = {}
         for employee in available_employees:
             count = 0
-            # Count from all previous weeks
-            for week in previous_data:
+            # Count from all previous weeks (look back more weeks for better fairness)
+            weeks_to_check = min(len(previous_data), 8)  # Look back up to 8 weeks
+            for week_idx in range(weeks_to_check):
+                week = previous_data[week_idx]
                 for day in range(7):
                     if employee in week.get_on_call_employees(day):
-                        count += 1
+                        # Apply time-based weighting: recent weeks have higher weight
+                        weight = 1.0 - (week_idx * 0.1)  # Recent weeks weighted more heavily
+                        count += weight
             historical_counts[employee] = count
         
         # Find minimum count
-        min_count = min(historical_counts.values())
+        min_count = min(historical_counts.values()) if historical_counts else 0
         
-        # Get all employees with minimum count
+        # Get all employees with minimum count (within small tolerance for floating point)
+        tolerance = 0.1
         fairest_employees = [emp for emp in available_employees 
-                           if historical_counts[emp] == min_count]
+                           if historical_counts[emp] <= min_count + tolerance]
         
-        # If multiple employees have same minimal count, use alphabetical order for consistency
+        # If multiple employees have similar minimal count, also consider current week assignments
+        if len(fairest_employees) > 1:
+            fairest_employees = self._break_ties_with_current_week(fairest_employees, historical_counts)
+        
+        # If still tied, use alphabetical order for consistency
         fairest_employees.sort()
         return fairest_employees[0]
+    
+    def _break_ties_with_current_week(self, tied_employees: List[str], historical_counts: Dict[str, float]) -> List[str]:
+        """Break ties by considering current week assignments and total fairness."""
+        # Among tied employees, prefer those with truly minimal historical assignments
+        min_historical = min(historical_counts[emp] for emp in tied_employees)
+        return [emp for emp in tied_employees if historical_counts[emp] == min_historical]
     
     def get_rule_names(self) -> List[str]:
         """Get list of active rule names."""
