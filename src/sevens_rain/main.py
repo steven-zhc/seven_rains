@@ -188,4 +188,10 @@ def main(target_year: int = None, target_month: int = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) >= 3:
+        year = int(sys.argv[1])
+        month = int(sys.argv[2])
+        main(year, month)
+    else:
+        main()
